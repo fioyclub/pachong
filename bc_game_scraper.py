@@ -21,16 +21,29 @@ class BCGameScraper:
         self.detail_url_template = "https://bc.game/api/sportsbook/v1/events/{event_id}"
         self.session = None
         self.memory_threshold = 80  # 内存使用率阈值
+        self._session_created = False
         
     async def __aenter__(self):
         """异步上下文管理器入口"""
-        self.session = aiohttp.ClientSession()
+        await self._ensure_session()
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """异步上下文管理器出口"""
-        if self.session:
+        await self.close()
+    
+    async def _ensure_session(self):
+        """确保session已创建"""
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+            self._session_created = True
+    
+    async def close(self):
+        """关闭session"""
+        if self.session and self._session_created:
             await self.session.close()
+            self.session = None
+            self._session_created = False
             
     def check_memory_usage(self):
         """检查内存使用率"""
@@ -49,6 +62,7 @@ class BCGameScraper:
     async def get_snapshot(self) -> Optional[Dict[str, Any]]:
         """异步获取快照数据"""
         try:
+            await self._ensure_session()
             async with self.session.get(self.snapshot_url) as response:
                 if response.status == 200:
                     return await response.json()
@@ -60,16 +74,44 @@ class BCGameScraper:
             return None
     
     async def fetch_events_snapshot(self) -> Optional[Dict[str, Any]]:
-        """异步获取事件快照数据（别名方法）"""
+        """异步获取事件快照数据"""
         try:
+            await self._ensure_session()
+            
+            print(f"开始请求API: {LIST_URL}")
+            print(f"请求头: {HEADERS}")
+            
             async with self.session.get(LIST_URL, headers=HEADERS, timeout=15) as response:
+                print(f"API响应状态码: {response.status}")
+                
                 if response.status == 200:
-                    return await response.json()
+                    data = await response.json()
+                    print(f"成功获取数据，顶级键: {list(data.keys()) if data else 'None'}")
+                    
+                    # 检查关键数据结构
+                    if 'events' in data:
+                        events_count = len(data['events'])
+                        print(f"事件数量: {events_count}")
+                        
+                        # 检查是否有足球相关事件
+                        football_events = 0
+                        for event_id, event_data in data['events'].items():
+                            if event_data and isinstance(event_data, dict) and 'markets' in event_data and event_data['markets'] and '1' in event_data['markets']:
+                                football_events += 1
+                        print(f"有1X2市场的事件数量: {football_events}")
+                    else:
+                        print("警告: 响应数据中没有'events'键")
+                    
+                    return data
                 else:
                     print(f"获取事件快照失败，状态码: {response.status}")
+                    response_text = await response.text()
+                    print(f"错误响应内容: {response_text[:500]}...")
                     return None
         except Exception as e:
             print(f"获取事件快照异常: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     async def get_event_detail(self, event_id: str) -> Optional[Dict[str, Any]]:
@@ -77,6 +119,7 @@ class BCGameScraper:
         url = f"https://bc.game/api/sportsbook/v1/events/{event_id}"
         
         try:
+            await self._ensure_session()
             async with self.session.get(url, headers=HEADERS, timeout=10) as response:
                 if response.status == 200:
                     return await response.json()
@@ -88,62 +131,80 @@ class BCGameScraper:
             return None
     
     def parse_snapshot_data(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """解析快照数据，提取足球1X2赔率"""
+        """解析快照数据，提取足球1X2赔率（适配sptpub.com API）"""
         result = []
         
         try:
-            sports = snapshot.get('data', {}).get('sports', [])
-            for sport in sports:
-                if sport.get('name') != 'Football':
-                    continue
+            events = snapshot.get('events', {})
+            tournaments = snapshot.get('tournaments', {})
+            categories = snapshot.get('categories', {})
+            sports = snapshot.get('sports', {})
+            
+            print(f"开始解析快照数据，共 {len(events)} 个事件")
+            
+            for event_id, event_data in events.items():
+                try:
+                    # 检查事件数据是否有效
+                    if not event_data or not isinstance(event_data, dict):
+                        continue
                     
-                tournaments = sport.get('tournaments', [])
-                for tournament in tournaments:
-                    league_name = tournament.get('name', 'Unknown League')
+                    # 检查是否有1X2市场（market_id = '1'）
+                    markets = event_data.get('markets', {})
+                    if not markets or '1' not in markets:
+                        continue
                     
-                    events = tournament.get('events', [])
-                    for event in events:
-                        event_id = event.get('id')
-                        if not event_id:
-                            continue
+                    # 解析1X2赔率
+                    market_1 = markets['1']
+                    odds_1 = odds_x = odds_2 = None
+                    
+                    # 遍历所有线路（通常是空字符串""）
+                    for line_key, outcomes in market_1.items():
+                        if isinstance(outcomes, dict):
+                            # 获取1X2赔率
+                            odds_1 = outcomes.get('1', {}).get('k')
+                            odds_x = outcomes.get('X', {}).get('k')  # 有些API用X表示平局
+                            odds_2 = outcomes.get('2', {}).get('k')
                             
-                        home_team = event.get('home', {}).get('name', 'Unknown')
-                        away_team = event.get('away', {}).get('name', 'Unknown')
-                        
-                        # 查找1X2市场
-                        markets = event.get('markets', [])
-                        odds_1 = odds_x = odds_2 = None
-                        
-                        for market in markets:
-                            if market.get('name') == '1X2':
-                                outcomes = market.get('outcomes', [])
-                                for outcome in outcomes:
-                                    outcome_name = outcome.get('name')
-                                    odds = outcome.get('odds')
-                                    
-                                    if outcome_name == '1':
-                                        odds_1 = odds
-                                    elif outcome_name == 'X':
-                                        odds_x = odds
-                                    elif outcome_name == '2':
-                                        odds_2 = odds
-                                break
-                        
-                        # 如果快照中没有完整的1X2赔率，标记需要补齐
-                        need_detail = not all([odds_1, odds_x, odds_2])
-                        
-                        result.append({
-                            'event_id': event_id,
-                            'league': league_name,
-                            'home_team': home_team,
-                            'away_team': away_team,
-                            'odds_1': odds_1,
-                            'odds_x': odds_x,
-                            'odds_2': odds_2,
-                            'need_detail': need_detail
-                        })
+                            # 如果没有X，尝试用2作为平局，3作为客胜
+                            if not odds_x and '3' in outcomes:
+                                odds_x = outcomes.get('2', {}).get('k')
+                                odds_2 = outcomes.get('3', {}).get('k')
+                            
+                            break
+                    
+                    # 如果没有获取到完整的1X2赔率，跳过
+                    if not all([odds_1, odds_2]):
+                        continue
+                    
+                    # 获取联赛和队伍信息（需要通过其他方式获取，暂时使用默认值）
+                    league_name = "Unknown League"
+                    home_team = "Home Team"
+                    away_team = "Away Team"
+                    
+                    # 尝试从tournaments和categories获取联赛信息
+                    # 这需要额外的逻辑来关联事件和锦标赛
+                    
+                    result.append({
+                        'event_id': event_id,
+                        'league': league_name,
+                        'home_team': home_team,
+                        'away_team': away_team,
+                        'odds_1': odds_1,
+                        'odds_x': odds_x,
+                        'odds_2': odds_2,
+                        'need_detail': False  # 已经有赔率了，不需要详情
+                    })
+                    
+                except Exception as e:
+                    print(f"解析事件 {event_id} 失败: {e}")
+                    continue
+            
+            print(f"成功解析 {len(result)} 个有1X2赔率的事件")
+            
         except Exception as e:
             print(f"解析快照数据失败: {e}")
+            import traceback
+            traceback.print_exc()
         
         return result
     

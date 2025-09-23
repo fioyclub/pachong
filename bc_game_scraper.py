@@ -176,13 +176,27 @@ class BCGameScraper:
                     if not all([odds_1, odds_2]):
                         continue
                     
-                    # 获取联赛和队伍信息（需要通过其他方式获取，暂时使用默认值）
+                    # 获取事件描述信息（可能为空）
+                    desc = event_data.get('desc', {})
+                    
+                    # 尝试从tournaments中找到联赛信息
+                    # 由于API没有提供tournament_id关联，我们只能使用默认值或尝试其他方法
                     league_name = "Unknown League"
                     home_team = "Home Team"
                     away_team = "Away Team"
                     
-                    # 尝试从tournaments和categories获取联赛信息
-                    # 这需要额外的逻辑来关联事件和锦标赛
+                    # 如果有desc信息，使用现有函数
+                    if desc:
+                        league_name = league_name_from_maps(tournaments, categories, desc)
+                        home_team, away_team = teams_from_desc(desc)
+                    else:
+                        # 尝试从可用的tournaments中随机选择一个作为示例
+                        # 这不是理想的解决方案，但API确实没有提供关联信息
+                        if tournaments:
+                            # 为了演示，我们可以显示可用的联赛列表
+                            tournament_names = [t.get('name', 'Unknown') for t in tournaments.values()]
+                            if tournament_names:
+                                league_name = f"Available: {', '.join(tournament_names[:3])}..."
                     
                     result.append({
                         'event_id': event_id,
@@ -395,8 +409,19 @@ def main():
             continue  # 这场没有开 1X2
 
         home_odds, draw_odds, away_odds = odds
-        league = league_name_from_maps(tournaments, categories, desc) if desc else "Unknown League"
-        home, away = teams_from_desc(desc)
+        
+        # 尝试获取联赛信息
+        if desc:
+            league = league_name_from_maps(tournaments, categories, desc)
+            home, away = teams_from_desc(desc)
+        else:
+            # 没有desc信息时，显示可用的联赛列表
+            if tournaments:
+                tournament_names = [t.get('name', 'Unknown') for t in tournaments.values()]
+                league = f"Available Leagues: {', '.join(tournament_names[:2])}..."
+            else:
+                league = "Unknown League"
+            home, away = "Home Team", "Away Team"
 
         print(f"Event {event_id} | {league}")
         print(f"{home} vs {away}")

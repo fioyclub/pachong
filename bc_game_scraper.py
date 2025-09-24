@@ -303,7 +303,8 @@ class BCGameScraper:
         return await self.scrape_all_odds()
 
 # 你刚刚在 Network 里确认到的"列表 URL"（Preview 里有 sports/categories/tournaments/events 的那条）
-LIST_URL = "https://api-k-c7818b61-623.sptpub.com/api/v3/live/brand/2103509236163162112/en/3517210528874"
+# 版本号已更新为测试发现的最优版本（包含更多事件数据）
+LIST_URL = "https://api-k-c7818b61-623.sptpub.com/api/v3/live/brand/2103509236163162112/en/3517210518874"
 
 # 详情接口的公共部分（当列表里1X2缺失时，用详情接口补一次）
 BASE   = "https://api-k-c7818b61-623.sptpub.com"
@@ -345,9 +346,17 @@ def league_name_from_maps(tournaments: dict, categories: dict, desc: dict) -> st
     return league
 
 def teams_from_desc(desc: dict):
-    """尽量从 desc 拿到主客队名；若缺失就兜底"""
-    home = desc.get("home_name") or desc.get("home") or "Home"
-    away = desc.get("away_name") or desc.get("away") or "Away"
+    """从 desc 中解析主客队名，支持新的competitors结构"""
+    # 新的数据结构：competitors数组包含队伍信息
+    competitors = desc.get("competitors", [])
+    if competitors and len(competitors) >= 2:
+        home = competitors[0].get("name", "Home Team")
+        away = competitors[1].get("name", "Away Team")
+        return home, away
+    
+    # 兼容旧的数据结构
+    home = desc.get("home_name") or desc.get("home") or "Home Team"
+    away = desc.get("away_name") or desc.get("away") or "Away Team"
     return home, away
 
 def parse_1x2(markets: dict):

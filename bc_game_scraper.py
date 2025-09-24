@@ -142,10 +142,87 @@ class BCGameScraper:
             
             print(f"开始解析快照数据，共 {len(events)} 个事件")
             
+            # 统计运动类型
+            sport_stats = {}
+            filtered_events = 0
+            
             for event_id, event_data in events.items():
                 try:
                     # 检查事件数据是否有效
                     if not event_data or not isinstance(event_data, dict):
+                        continue
+                    
+                    # 获取事件的运动类型信息
+                    desc = event_data.get('desc', {})
+                    
+                    # 初始化变量
+                    sport_id = None
+                    sport_name = "Unknown Sport"
+                    
+                    # 首先尝试从desc中直接获取sport信息
+                    sport_id = desc.get('sport')
+                    
+                    if sport_id and str(sport_id) in sports:
+                        sport_info = sports.get(str(sport_id), {})
+                        sport_name = sport_info.get('name', f'Sport {sport_id}')
+                    else:
+                        # 如果desc中没有sport，尝试通过tournament -> category -> sport 链条获取
+                        tournament_id = desc.get('tournament_id') or desc.get('tournament')
+                        
+                        if tournament_id:
+                            tournament_info = tournaments.get(str(tournament_id), {})
+                            category_id = tournament_info.get('category_id')
+                            
+                            if category_id:
+                                category_info = categories.get(str(category_id), {})
+                                sport_id = category_info.get('sport_id')
+                                
+                                if sport_id:
+                                    sport_info = sports.get(str(sport_id), {})
+                                    sport_name = sport_info.get('name', f'Sport {sport_id}')
+                    
+                    # 统计运动类型
+                    if sport_id:
+                        sport_id_str = str(sport_id)
+                        if sport_id_str not in sport_stats:
+                            sport_stats[sport_id_str] = {'name': sport_name, 'count': 0}
+                        sport_stats[sport_id_str]['count'] += 1
+                    else:
+                        # 没有找到sport_id的事件也要统计
+                        if 'unknown' not in sport_stats:
+                            sport_stats['unknown'] = {'name': 'Unknown Sport', 'count': 0}
+                        sport_stats['unknown']['count'] += 1
+                    
+                    # 添加调试信息：打印足球事件的详细结构
+                    if str(sport_id) == "1":
+                        print(f"\n找到足球事件 {event_id}:")
+                        print(f"  sport_id: {sport_id}")
+                        print(f"  sport_name: {sport_name}")
+                        print(f"  desc: {desc}")
+                        print(f"  event_data keys: {list(event_data.keys())}")
+                    
+                    # 只处理真正的足球比赛（sport_id = "1"）
+                    if str(sport_id) != "1":
+                        filtered_events += 1
+                        continue
+                    
+                    # 进一步过滤：排除虚拟足球/eSoccer
+                    # 检查是否为虚拟比赛或eSoccer
+                    is_virtual = desc.get('virtual', False)
+                    competitors = desc.get('competitors', [])
+                    
+                    # 检查队伍名称是否包含eSoccer标识
+                    is_esoccer = False
+                    for competitor in competitors:
+                        name = competitor.get('name', '')
+                        if '[eSoccer]' in name or 'eSoccer' in name or '[eFootball]' in name:
+                            is_esoccer = True
+                            break
+                    
+                    # 如果是虚拟比赛或eSoccer，跳过
+                    if is_virtual or is_esoccer:
+                        filtered_events += 1
+                        print(f"过滤虚拟/eSoccer事件: {event_id} - virtual: {is_virtual}, esoccer: {is_esoccer}")
                         continue
                     
                     # 检查是否有1X2市场（market_id = '1'）
@@ -185,18 +262,9 @@ class BCGameScraper:
                     home_team = "Home Team"
                     away_team = "Away Team"
                     
-                    # 如果有desc信息，使用现有函数
-                    if desc:
-                        league_name = league_name_from_maps(tournaments, categories, desc)
-                        home_team, away_team = teams_from_desc(desc)
-                    else:
-                        # 尝试从可用的tournaments中随机选择一个作为示例
-                        # 这不是理想的解决方案，但API确实没有提供关联信息
-                        if tournaments:
-                            # 为了演示，我们可以显示可用的联赛列表
-                            tournament_names = [t.get('name', 'Unknown') for t in tournaments.values()]
-                            if tournament_names:
-                                league_name = f"Available: {', '.join(tournament_names[:3])}..."
+                    # 使用现有函数解析联赛和队伍信息
+                    league_name = league_name_from_maps(tournaments, categories, desc)
+                    home_team, away_team = teams_from_desc(desc)
                     
                     result.append({
                         'event_id': event_id,
@@ -213,7 +281,19 @@ class BCGameScraper:
                     print(f"解析事件 {event_id} 失败: {e}")
                     continue
             
-            print(f"成功解析 {len(result)} 个有1X2赔率的事件")
+            # 输出统计信息
+            print(f"\n=== 运动类型过滤统计 ===")
+            print(f"总事件数: {len(events)}")
+            print(f"过滤掉的非足球事件: {filtered_events}")
+            print(f"成功解析的足球1X2赔率事件: {len(result)}")
+            
+            print(f"\n=== 各运动类型事件数量 ===")
+            if sport_stats:
+                for sport_id, info in sport_stats.items():
+                    status = "✓ 已包含" if sport_id == "1" else "✗ 已过滤"
+                    print(f"Sport {sport_id} ({info['name']}): {info['count']} 事件 {status}")
+            else:
+                print("未找到运动类型统计信息")
             
         except Exception as e:
             print(f"解析快照数据失败: {e}")
@@ -387,62 +467,32 @@ def parse_1x2(markets: dict):
     return None
 
 def main():
+    """使用新的足球过滤逻辑的主函数"""
+    print("开始获取BC.Game足球赔率数据...")
+    
+    # 创建爬虫实例
+    scraper = BCGameScraper()
+    
+    # 获取快照数据
     snapshot = fetch_events_snapshot()
-
-    events      = snapshot.get("events", {}) or {}
-    tournaments = snapshot.get("tournaments", {}) or {}
-    categories  = snapshot.get("categories", {}) or {}
-
-    printed = 0
-    for raw_event_id, node in events.items():
-        event_id = str(raw_event_id)
-        detail_in_list = node if isinstance(node, dict) else {}
-
-        # 先试图直接用列表里的数据（有些场次列表里就自带了 markets/desc）
-        desc  = detail_in_list.get("desc", {}) if detail_in_list else {}
-        mkt   = detail_in_list.get("markets", {}) if detail_in_list else {}
-        odds  = parse_1x2(mkt)
-
-        # 缺失时再请求详情接口补齐
-        if not odds:
-            try:
-                d = fetch_event_detail(event_id)
-                ev = (d.get("events") or {}).get(event_id) or {}
-                desc = ev.get("desc", {}) or desc
-                odds = parse_1x2(ev.get("markets", {}) or {}) or odds
-                time.sleep(0.2)  # 友好限速，避免触发风控
-            except Exception:
-                continue
-
-        if not odds:
-            continue  # 这场没有开 1X2
-
-        home_odds, draw_odds, away_odds = odds
-        
-        # 尝试获取联赛信息
-        if desc:
-            league = league_name_from_maps(tournaments, categories, desc)
-            home, away = teams_from_desc(desc)
-        else:
-            # 没有desc信息时，显示可用的联赛列表
-            if tournaments:
-                tournament_names = [t.get('name', 'Unknown') for t in tournaments.values()]
-                league = f"Available Leagues: {', '.join(tournament_names[:2])}..."
-            else:
-                league = "Unknown League"
-            home, away = "Home Team", "Away Team"
-
-        print(f"Event {event_id} | {league}")
-        print(f"{home} vs {away}")
-        if draw_odds is not None:
-            print(f"Home: {home_odds}  Draw: {draw_odds}  Away: {away_odds}")
-        else:
-            print(f"Home: {home_odds}  Away: {away_odds}")
+    if not snapshot:
+        print("获取快照数据失败")
+        return
+    
+    # 使用新的解析方法（包含足球过滤）
+    football_events = scraper.parse_snapshot_data(snapshot)
+    
+    if not football_events:
+        print("没有找到任何足球1X2赔率数据")
+        return
+    
+    # 显示结果
+    print(f"\n=== 足球赔率数据 ===")
+    for event in football_events:
+        print(f"Event {event['event_id']} | {event['league']}")
+        print(f"{event['home_team']} vs {event['away_team']}")
+        print(f"Home: {event['odds_1']}  Draw: {event['odds_x']}  Away: {event['odds_2']}")
         print("-" * 60)
-        printed += 1
-
-    if printed == 0:
-        print("没有解析到任何 1X2 赔率；可能当前快照里没有开 1X2，或需换一个最新的 version 列表URL。")
 
 if __name__ == "__main__":
     main()
